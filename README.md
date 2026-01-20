@@ -1,6 +1,4 @@
-# Title, Description, Sketch
-
-### Bloop
+# Bloop
 An interactive desk companion featuring a magnetically-controlled ferrofluid that responds to hand gestures (and potentially audio commands in the future). The creature exhibits lifelike behaviors through computer vision and wireless control. Core Behaviors:
 
 Follow - Tracks and follows user's face position
