@@ -12,13 +12,8 @@ A circular acrylic platform (12" diameter) contains ferrofluid in carved tracks.
 
 # Sensor Device
 
-### ESP32-CAM Vision Sensor
-The sensing device uses an ESP32-CAM module with an integrated OV2640 2-megapixel camera to detect and track user interactions. The camera runs a motion detection algorithm to identify the user's position and gestures.
-
-### Functionality
-Face Tracking: Computer vision algorithms detect faces and calculate the X-axis position to enable smooth tracking behavior
-Gesture Recognition: Identifies specific hand gestures including circle (trigger "Spin"), face covering (trigger "Hide"), and wave over (trigger "Follow")
-Wireless Communication: Transmits position data and behavior commands to the display device via ESP-NOW protocol (2.4GHz WiFi)
+### ESP32-C3
+The sensing device uses an ESP32C3 with a SEN0359-EN voice recognition module to detect command words and move the stepper motor accordingly to make the ferrofluid perform the "tricks".
 
 The device is powered by a 150mAh 3.7V LiPo battery with USB charging, making it portable and easily repositionable. 
 
@@ -39,3 +34,5 @@ As the magnet rotates, the ferrofluid forms dramatic spikes that follow the magn
 
 ![Systems Diagram](./assets/System.png)
 ![Flow chart](./assets/Flow.png)
+
+![Electrical Diagram](./assets/Electrical%20Schematic.png)
