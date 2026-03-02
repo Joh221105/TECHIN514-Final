@@ -1,0 +1,16 @@
+# PlatformIO
+.pio/
+
+# IDE
+.vscode/
+
+# Environment / secrets
+.env
+secrets.h
+credentials.h
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
