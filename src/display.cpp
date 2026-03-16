@@ -1,112 +1,145 @@
 #include <Arduino.h>
+#include "DFRobot_DF2301Q.h"
 #include <BLEDevice.h>
+#include <BLEServer.h>
 #include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEClient.h>
-#include <BLEAdvertisedDevice.h>
+#include <BLE2902.h>
 
-#define SERVICE_UUID        "12345678-1234-5678-1234-56789abcdef0"
-#define CHARACTERISTIC_UUID "12345678-1234-5678-1234-56789abcdef1"
+// ── UART Pins ──────────────────────────────────────────────────────────────
+HardwareSerial sensorSerial(1);
+DFRobot_DF2301Q_UART asr(&sensorSerial, D10, D9);
 
-static bool doConnect = false;
-static bool connected = false;
-static bool doScan    = true;
-static BLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
-static BLEAdvertisedDevice*     myDevice              = nullptr;
+// ── BLE UUIDs ──────────────────────────────────────────────────────────────
+#define SERVICE_UUID        "1a8ac0fb-de23-4540-9511-a4fa87aaab90"
+#define CHARACTERISTIC_UUID "1a8ac0fb-de23-4540-9511-a4fa87aaab91"
+#define DEVICE_NAME         "SensorESP32"
 
-static void notifyCallback(BLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
-  if (length >= 1) {
-    Serial.print("Command received: ");
-    Serial.println(pData[0]);
-  }
+// ── Globals ────────────────────────────────────────────────────────────────
+BLEServer*         pServer         = nullptr;
+BLECharacteristic* pCharacteristic = nullptr;
+bool deviceConnected    = false;
+bool oldDeviceConnected = false;
+
+// ── Sliding Window Histogram ───────────────────────────────────────────────
+#define HISTORY_SIZE 10
+#define HISTORY_WINDOW_MS 5000
+#define COOLDOWN_MS 1500
+
+struct CMDEvent { uint8_t id; unsigned long t; };
+CMDEvent history[HISTORY_SIZE];
+int historyIdx = 0;
+
+uint8_t lastSentID = 0;
+unsigned long lastSentTime = 0;
+
+void recordCMD(uint8_t id) {
+  history[historyIdx] = { id, millis() };
+  historyIdx = (historyIdx + 1) % HISTORY_SIZE;
 }
 
-class MyClientCallback : public BLEClientCallbacks {
-  void onConnect(BLEClient* pclient) override {}
-  void onDisconnect(BLEClient* pclient) override {
-    connected = false;
-    Serial.println("[BLE] Disconnected");
+uint8_t countRecent(uint8_t id) {
+  unsigned long now = millis();
+  uint8_t count = 0;
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    if (history[i].id == id && (now - history[i].t) < HISTORY_WINDOW_MS)
+      count++;
+  }
+  return count;
+}
+
+uint8_t filteredCMDID(uint8_t id) {
+  if (id == 0) return 0;
+  unsigned long now = millis();
+  if (id == lastSentID && (now - lastSentTime) < COOLDOWN_MS) return 0;
+  lastSentID = id;
+  lastSentTime = now;
+  recordCMD(id);
+  return id;
+}
+
+// ── BLE Server Callbacks ───────────────────────────────────────────────────
+class ServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) override {
+    deviceConnected = true;
+    Serial.println("[BLE] Display connected");
+  }
+  void onDisconnect(BLEServer* pServer) override {
+    deviceConnected = false;
+    Serial.println("[BLE] Display disconnected");
   }
 };
 
-bool connectToServer() {
-  Serial.print("[BLE] Connecting to ");
-  Serial.println(myDevice->getAddress().toString().c_str());
-
-  // Create a fresh client each attempt — avoids stale GATT CIF on retry
-  BLEClient* pClient = BLEDevice::createClient();
-  pClient->setClientCallbacks(new MyClientCallback());
-
-  pClient->connect(myDevice);  // pass full device so address type is handled correctly
-  Serial.println("[BLE] Connected to server");
-  pClient->setMTU(517);
-
-  BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
-  if (pRemoteService == nullptr) {
-    Serial.println("[BLE] Service UUID not found");
-    pClient->disconnect();
-    return false;
-  }
-
-  pRemoteCharacteristic = pRemoteService->getCharacteristic(CHARACTERISTIC_UUID);
-  if (pRemoteCharacteristic == nullptr) {
-    Serial.println("[BLE] Characteristic UUID not found");
-    pClient->disconnect();
-    return false;
-  }
-
-  if (pRemoteCharacteristic->canNotify()) {
-    pRemoteCharacteristic->registerForNotify(notifyCallback);
-    Serial.println("[BLE] Subscribed. Waiting for commands...");
-  }
-
-  connected = true;
-  return true;
-}
-
-class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
-  void onResult(BLEAdvertisedDevice advertisedDevice) override {
-    Serial.print("[SCAN] Found: ");
-    Serial.println(advertisedDevice.toString().c_str());
-
-    if (advertisedDevice.haveServiceUUID() &&
-        advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
-      BLEDevice::getScan()->stop();
-      myDevice   = new BLEAdvertisedDevice(advertisedDevice);
-      doConnect  = true;
-      doScan     = true;
-    }
-  }
-};
-
+// ── Setup ──────────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("Starting display device...");
+  Serial.println("Starting...");
 
-  BLEDevice::init("DisplayESP32");
+  memset(history, 0, sizeof(history));
 
-  BLEScan* pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setInterval(1349);
-  pBLEScan->setWindow(449);
-  pBLEScan->setActiveScan(true);
-  pBLEScan->start(5, false);
+  if (!asr.begin()) {
+    Serial.println("asr.begin() FAILED - check wiring!");
+  } else {
+    Serial.println("asr.begin() SUCCESS");
+    delay(500);
+    asr.settingCMD(DF2301Q_UART_MSG_CMD_SET_MUTE, 1);
+    delay(100);
+    asr.settingCMD(DF2301Q_UART_MSG_CMD_SET_MUTE, 0);
+    delay(100);
+    asr.settingCMD(DF2301Q_UART_MSG_CMD_SET_VOLUME, 1);
+    delay(100);
+    asr.settingCMD(DF2301Q_UART_MSG_CMD_SET_WAKE_TIME, 30);
+  }
+
+  BLEDevice::init(DEVICE_NAME);
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new ServerCallbacks());
+
+  BLEService* pService = pServer->createService(SERVICE_UUID);
+  pCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+  );
+  pCharacteristic->addDescriptor(new BLE2902());
+
+  uint8_t initVal = 0;
+  pCharacteristic->setValue(&initVal, 1);
+  pService->start();
+
+  BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);
+  BLEDevice::startAdvertising();
+  Serial.println("[BLE] Advertising as 'SensorESP32'");
 }
 
+// ── Loop ───────────────────────────────────────────════════════════════════
 void loop() {
-  if (doConnect) {
-    if (connectToServer()) {
-      Serial.println("[BLE] Now connected to sensor.");
-    } else {
-      Serial.println("[BLE] Connection failed.");
+  uint8_t id = filteredCMDID(asr.getCMDID());
+  while (asr.getCMDID() != 0) {}  // drain buffer of duplicates
+
+  if (id != 0) {
+    Serial.print("Command ID: ");
+    Serial.println(id);
+
+    pCharacteristic->setValue(&id, 1);
+    if (deviceConnected) {
+      pCharacteristic->notify();
+      Serial.println("[BLE] Notification sent");
     }
-    doConnect = false;
   }
 
-  if (!connected && doScan) {
-    BLEDevice::getScan()->start(5, false);
+  // ── BLE reconnect ─────────────────────────────────────────────────────
+  if (!deviceConnected && oldDeviceConnected) {
+    delay(500);
+    pServer->startAdvertising();
+    Serial.println("[BLE] Restarting advertising...");
+    oldDeviceConnected = deviceConnected;
+  }
+  if (deviceConnected && !oldDeviceConnected) {
+    oldDeviceConnected = deviceConnected;
   }
 
-  delay(1000);
+  delay(100);
 }
